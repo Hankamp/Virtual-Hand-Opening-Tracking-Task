@@ -1,0 +1,8 @@
+Minopening,10
+Numberoftrials,20
+Targetsize,10
+Dwelltime,2000
+Minsensorinput,0
+Maxsensorinput,167
+Starttargetdiameter,100
+Comport,12

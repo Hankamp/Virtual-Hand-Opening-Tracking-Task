@@ -1,0 +1,190 @@
+define Start(p)
+{
+    # initialize parameters
+	red <- MakeColor("red4")
+	grey <- MakeColor("grey")
+	grn <- MakeColor("PALE GREEN")
+    
+	parpairs <- [["minopening",10],
+				["numberoftrials",20],
+				["targetsize",7],
+				["dwelltime",2000],
+				["minsensorinput",0],
+				["maxsensorinput",167],
+				["starttargetdiameter",100],
+				["comport",12]
+				]
+
+	gParams <- CreateParameters(parpairs,gParamFile)
+	
+	gSizeTarg <- gParams.targetsize
+	gMinTargDia <- gParams.minsensorinput + gParams.minopening
+	gMaxTargDia <- gParams.maxsensorinput + gParams.minopening
+	gNumTrials <- gParams.numberoftrials
+	gDwellTime <- gParams.dwelltime
+	gMinSenInput <- gParams.minsensorinput
+	gMaxSenInput <- gParams.maxsensorinput
+	gStTargDia <- gParams.starttargetdiameter
+	gComport <- gParams.comport-1
+
+    trials <- Shuffle(Sequence(gMinTargDia,gMaxTargDia,(Round((gMaxTargDia-gMinTargDia)/gNumTrials))))                    #Params: max diameter; min diameter; stepsize
+	
+    # create window and open COM port
+	win <- MakeWindow(grey)	                							#Create a window with a grey background
+	dev <- OpenComPort(gComport,57600)											#Open COM port
+
+	# subject number
+	if(gSubNum+""=="0")
+    {
+	  gSubNum <- GetSubNum(win)
+    }
+
+	# create output file
+	gFileOut <- GetNewDataFile(gSubNum,win,"grasp","csv",
+      "Subjectnum,Time,Target,Cursor,Condition,Success")
+	  
+	# initiate background rectangle
+	backRec <- Rectangle(gVideoWidth/2, gVideoHeight/2,gVideoWidth,gVideoHeight,grey,1)
+	Addobject(backRec,win)
+	
+    # initialize target circle Trial
+	maxTargTrial <- Circle(gVideoWidth/2, gVideoHeight/2, gStTargDia, red,1)		
+	minTargTrial <- Circle(gVideoWidth/2, gVideoHeight/2, gStTargDia-gSizeTarg, grn,1)       #2 circles together form the thick line circle
+	Addobject(maxTargTrial,win)
+	Addobject(minTargTrial,win)
+    Hide(maxTargTrial)           											
+    Hide(minTargTrial)           											
+
+    # initialize target circle Home
+    maxTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, 10, red,1)
+    minTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, 1, grn,1)
+    Addobject(maxTargHome,win)
+    Addobject(minTargHome,win)
+    Hide(maxTargHome)           										
+    Hide(minTargHome)           											
+
+    # initialize sensor circle
+    circle <- Circle(gVideoWidth/2, gVideoHeight/2, 10, red,0)
+	AddObject(circle,win)
+
+    # initialize labels
+    gDispValue <- EasyLabel(" ", gVideoWidth/2,800,win,30)                              # Label to display sensor value
+	gDispInstr <- EasyLabel("Press any key to start", gVideoWidth/2,200,win,30)         # Label to display instructions
+
+    # draw canvas (before trial start)
+    Draw()
+
+    # Wait for keypress before starting session
+    WaitForAnyKeyPress()  
+    gDispInstr.TEXT <- "Go to home position"
+
+
+	loop(i,trials){
+         
+        # set target circle radius 
+    	maxTargTrial.R <- i
+		minTargTrial.R <- maxTargTrial.R - gSizeTarg
+        
+        GetResponse(minTargHome, maxTargHome, minTargTrial, maxTargTrial, dev, 0, circle, i)     # homing
+		backRec.color <- grn
+        GetResponse(minTargTrial, maxTargTrial, minTargHome, maxTargHome, dev, 1, circle, i)     # trial
+		backRec.color <- grey
+    }
+}
+
+define GetResponse(minTarg, maxTarg, minNotTarg, maxNotTarg, dev, cond, circle, i){
+
+	#set canvas to draw on based on condition
+	
+
+    # reset parameters
+    success <- 0
+    prevgoal <- 0
+	t1 <- 0
+	t2 <- 0
+	value <- -1
+	
+    while(not success){
+		valueNew <- GetSensorValue(dev)
+
+        if (valueNew != -1){
+            if (value != valueNew){
+                if (valueNew >= gMinSenInput and valueNew <= gMaxSenInput){         	# check if value is within range
+                    value <- valueNew                           					# set new value to variable 'value'                                     
+                    gDispValue.TEXT <- value                    					# only update label text if value has changed
+                }
+            } # if new value is equal to old value, do nothing
+        } # if no value received, do nothing 
+
+        circle.R <- gMinTargDia + value              # set sensor circle radius to received value
+		
+        # check if sensor circle enters, stays, or is outside the target circle
+		goal <- (circle.R <= maxTarg.R) and (circle.R >= minTarg.R)
+
+        if (goal == 1){                             # sensor within target circle
+            if (prevgoal == 0) {                    # sensor enters target circle
+				t1 <- GetTime()
+                 prevgoal <- 1
+            } else {                                # stays is already inside target circle
+                t2 <- GetTime()	
+            }
+        } else {                                    # sensor outside target circle
+            t1 <- t2
+            prevgoal <- 0
+        }
+        
+        success <- GetSuccess(cond, t1, t2)
+
+        Show(maxTarg)
+        Show(minTarg)
+        Hide(maxNotTarg)
+        Hide(minNotTarg)
+		
+		time <- GetTime()
+        Draw()
+		
+		dat <- [gSubNum,time,maxTarg.R,circle.R,cond,success]
+		FilePrint(gFileOut,ConcatenateList(Flatten(dat),","))
+    }
+}
+
+define GetSuccess(cond, t1, t2){
+
+# cond == 0 -> Homing
+# cond == 1 -> Trial 
+
+    s <- 0
+
+    # determine success
+    if ((t2-t1)>gDwellTime){                          # Compare the timestamps: if longer than 2s on target, goal is reached
+        if (cond == 0) {
+            gDispInstr.TEXT <- "Go to target"
+        } else {
+            gDispInstr.TEXT <- "Goal reached, move hand to start position"
+        }
+        s <- 1
+    }
+    return(s)
+}
+
+define GetSensorValue(dev){
+
+	start <- ComPortGetByte(dev)									#Read value
+	value <- -1
+
+	if (start==10){     										    #10 = ascii newline return
+
+		Wait(5)
+		byte0 <- ComPortGetByte(dev)								#Read value
+		byte1 <- ComPortGetByte(dev)								#Read value
+		byte2 <- ComPortGetByte(dev)								#Read value
+		byte3 <- ComPortGetByte(dev)								#Read value
+				
+		value <- byte3
+		value <- (value * 256) + byte2
+		value <- (value * 256) + byte1
+		value <- (value * 256) + byte0	
+    }
+
+    return (value)
+}
