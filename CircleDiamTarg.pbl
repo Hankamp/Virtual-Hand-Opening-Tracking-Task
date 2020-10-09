@@ -9,31 +9,21 @@ define Start(p)
 				["numberoftrials",20],
 				["targetsize",7],
 				["dwelltime",2000],
-				["minsensorinput",0],
-				["maxsensorinput",167],
 				["starttargetdiameter",100],
-				["comport",12]
+                ["comport",3]
 				]
 
 	gParams <- CreateParameters(parpairs,gParamFile)
 	
-	gSizeTarg <- gParams.targetsize
-	gMinTargDia <- gParams.minsensorinput + gParams.minopening
-	gMaxTargDia <- gParams.maxsensorinput + gParams.minopening
 	gNumTrials <- gParams.numberoftrials
 	gDwellTime <- gParams.dwelltime
-	gMinSenInput <- gParams.minsensorinput
-	gMaxSenInput <- gParams.maxsensorinput
 	gStTargDia <- gParams.starttargetdiameter
-	gComport <- gParams.comport-1
-
-    trials <- Shuffle(Sequence(gMinTargDia,gMaxTargDia,(Round((gMaxTargDia-gMinTargDia)/gNumTrials))))                    #Params: max diameter; min diameter; stepsize
-	
-    # create window and open COM port
+    gComport <- gParams.comport-1
+    
+    # create window
 	win <- MakeWindow(grey)	                							#Create a window with a grey background
-	dev <- OpenComPort(gComport,57600)											#Open COM port
 
-	# subject number
+	# create subject number
 	if(gSubNum+""=="0")
     {
 	  gSubNum <- GetSubNum(win)
@@ -41,44 +31,75 @@ define Start(p)
 
 	# create output file
 	gFileOut <- GetNewDataFile(gSubNum,win,"grasp","csv",
-      "Subjectnum,Time,Target,Cursor,Condition,Success")
-	  
-	# initiate background rectangle
-	backRec <- Rectangle(gVideoWidth/2, gVideoHeight/2,gVideoWidth,gVideoHeight,grey,1)
-	Addobject(backRec,win)
-	
+      "Subjectnum,Time,Target,Cursor,Condition,Success")     											          											
+
+    # initialize label   
+    gDispInstr <- EasyLabel(" ", gVideoWidth/2,200,win,30)                              # Label to display instructions
+
+     # initiate background rectangle
+	backRec <- Rectangle(gVideoWidth/2, gVideoHeight/2,gVideoWidth,gVideoHeight,grey,1)    
+
+    # option to manually set limits
+    #  gMinSenInput <- 5                                      
+    #  gMaxSenInput <- 100
+
+    # Calibration
+    c1 <- 0; c2 <- 0
+    button <- MakeButton("Calibrate",gVideoWidth/2, gVideoHeight/2,win,300)
+    
+    # Minimal angle calibration
+    gDispInstr.TEXT <- "Move to maximum extension position and double click button"
+    Draw()
+    dev <- OpenComPort(gComport,115200)									
+    while(c1 != 1){                                                     
+        calib <- Calibration (dev,c1,button)
+        gMinSenInput <- First(calib)
+        c1 <- Nth(calib,2)
+    }
+    
+    # Maximal angle calibration
+    gDispInstr.TEXT <- "Move to maximum flexion position and double click button"
+    Draw()
+    while(c2 != 1){
+        calib <- Calibration (dev,c2,button)
+        gMaxSenInput <- First(calib)
+        c2 <- Nth(calib,2)
+    }
+
+    # Map input to output range [10-400; Range = 391]
+    r <- gMaxSenInput-gMinSenInput+1
+    gFactor <- 391/r
+    
+    gMinTargDia <- 1.25*(10 + gFactor*(gMinSenInput-gMinSenInput))
+    gMaxTargDia <- 0.75*(10 + gFactor*(gMaxSenInput-gMinSenInput))
+    gSizeTarg <- (10 + gFactor*(gParams.targetsize-gMinSenInput))/2
+
     # initialize target circle Trial
 	maxTargTrial <- Circle(gVideoWidth/2, gVideoHeight/2, gStTargDia, red,1)		
 	minTargTrial <- Circle(gVideoWidth/2, gVideoHeight/2, gStTargDia-gSizeTarg, grn,1)       #2 circles together form the thick line circle
-	Addobject(maxTargTrial,win)
-	Addobject(minTargTrial,win)
-    Hide(maxTargTrial)           											
-    Hide(minTargTrial)           											
-
+	     											
     # initialize target circle Home
-    maxTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, 10, red,1)
-    minTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, 1, grn,1)
-    Addobject(maxTargHome,win)
-    Addobject(minTargHome,win)
-    Hide(maxTargHome)           										
-    Hide(minTargHome)           											
+    maxTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, gMinTargDia+gSizeTarg, red,1)
+    minTargHome <- Circle(gVideoWidth/2, gVideoHeight/2, gMinTargDia, grey,1)
 
     # initialize sensor circle
     circle <- Circle(gVideoWidth/2, gVideoHeight/2, 10, red,0)
-	AddObject(circle,win)
 
-    # initialize labels
-    gDispValue <- EasyLabel(" ", gVideoWidth/2,800,win,30)                              # Label to display sensor value
-	gDispInstr <- EasyLabel("Press any key to start", gVideoWidth/2,200,win,30)         # Label to display instructions
+    trials <- Shuffle(Sequence(gMinTargDia,gMaxTargDia,(Round((gMaxTargDia-gMinTargDia)/gNumTrials))))                    
 
-    # draw canvas (before trial start)
+    # Refresh window
+    RemoveObject(button,win)
+    Addobject(backRec,win)  
+    Addobject(maxTargTrial,win); Hide(maxTargTrial)   
+    Addobject(minTargTrial,win); Hide(minTargTrial)  
+    Addobject(maxTargHome,win); Hide(maxTargHome)   
+    Addobject(minTargHome,win); Hide(minTargHome)  
+    AddObject(circle,win)
+    gDispValue <- EasyLabel(" ", gVideoWidth/2,800,win,30)                                  # Label to display sensor value
+	gDispInstr <- EasyLabel(" ", gVideoWidth/2,200,win,30)                                  # Label to display instructions
     Draw()
 
-    # Wait for keypress before starting session
-    WaitForAnyKeyPress()  
-    gDispInstr.TEXT <- "Go to home position"
-
-
+    #Main loop
 	loop(i,trials){
          
         # set target circle radius 
@@ -86,16 +107,28 @@ define Start(p)
 		minTargTrial.R <- maxTargTrial.R - gSizeTarg
         
         GetResponse(minTargHome, maxTargHome, minTargTrial, maxTargTrial, dev, 0, circle, i)     # homing
-		backRec.color <- grn
+        backRec.color <- grn
         GetResponse(minTargTrial, maxTargTrial, minTargHome, maxTargHome, dev, 1, circle, i)     # trial
 		backRec.color <- grey
     }
+    gDispInstr.TEXT <- "You are done!! Press a key to leave the test"
+    WaitForAnyKeyPress()
 }
 
-define GetResponse(minTarg, maxTarg, minNotTarg, maxNotTarg, dev, cond, circle, i){
 
-	#set canvas to draw on based on condition
-	
+
+
+
+
+
+
+
+
+
+
+# Functions
+
+define GetResponse(minTarg, maxTarg, minNotTarg, maxNotTarg, dev, cond, circle, i){
 
     # reset parameters
     success <- 0
@@ -105,30 +138,31 @@ define GetResponse(minTarg, maxTarg, minNotTarg, maxNotTarg, dev, cond, circle, 
 	value <- -1
 	
     while(not success){
-		valueNew <- GetSensorValue(dev)
+        valueNew_arr <- GetSensorValue(dev)
+        valueNew <- First(valueNew_arr)
 
         if (valueNew != -1){
             if (value != valueNew){
                 if (valueNew >= gMinSenInput and valueNew <= gMaxSenInput){         	# check if value is within range
-                    value <- valueNew                           					# set new value to variable 'value'                                     
-                    gDispValue.TEXT <- value                    					# only update label text if value has changed
+                    value <- valueNew                           					    # set new value to variable 'value'                                     
+                    gDispValue.TEXT <- value                    					    # only update label text if value has changed
                 }
             } # if new value is equal to old value, do nothing
         } # if no value received, do nothing 
 
-        circle.R <- gMinTargDia + value              # set sensor circle radius to received value
+        circle.R <- 10+gFactor*(value-gMinSenInput)                                     # set sensor circle radius to received value
 		
         # check if sensor circle enters, stays, or is outside the target circle
 		goal <- (circle.R <= maxTarg.R) and (circle.R >= minTarg.R)
 
-        if (goal == 1){                             # sensor within target circle
-            if (prevgoal == 0) {                    # sensor enters target circle
+        if (goal == 1){                                                                 # sensor within target circle
+            if (prevgoal == 0) {                                                        # sensor enters target circle
 				t1 <- GetTime()
                  prevgoal <- 1
-            } else {                                # stays is already inside target circle
+            } else {                                                                    # stays is already inside target circle
                 t2 <- GetTime()	
             }
-        } else {                                    # sensor outside target circle
+        } else {                                                                        # sensor outside target circle
             t1 <- t2
             prevgoal <- 0
         }
@@ -148,6 +182,29 @@ define GetResponse(minTarg, maxTarg, minNotTarg, maxNotTarg, dev, cond, circle, 
     }
 }
 
+define Calibration(dev,c,but){
+    senInput <- []
+    b <- 1
+    click <- WaitForClickOnTargetWithTimeout([but],[b],20)
+
+    if(click != "<timeout>"){
+        Print("You clicked on button: " + click)
+        senValue <- First(GetSensorValue(dev))
+        Print(senValue)
+        if(senValue != -1){
+            if(senValue >= -10 and senValue <= 300){
+                senInput <- senValue
+                Print_("SenInput is: ") 
+                Print(senInput)
+                c <- 1
+            }
+        }
+    }
+    dummy <- First(GetSensorValue(dev))
+    return [senInput,c]   
+}
+
+
 define GetSuccess(cond, t1, t2){
 
 # cond == 0 -> Homing
@@ -156,7 +213,7 @@ define GetSuccess(cond, t1, t2){
     s <- 0
 
     # determine success
-    if ((t2-t1)>gDwellTime){                          # Compare the timestamps: if longer than 2s on target, goal is reached
+    if ((t2-t1)>gDwellTime){                                                        # Compare the timestamps: if longer than 2s on target, goal is reached
         if (cond == 0) {
             gDispInstr.TEXT <- "Go to target"
         } else {
@@ -169,22 +226,21 @@ define GetSuccess(cond, t1, t2){
 
 define GetSensorValue(dev){
 
-	start <- ComPortGetByte(dev)									#Read value
-	value <- -1
-
-	if (start==10){     										    #10 = ascii newline return
+    start <- ComPortGetByte(dev)									                
+    value <- -1
+    
+	if (start==10){   							                                    #10 = ascii newline return
 
 		Wait(5)
-		byte0 <- ComPortGetByte(dev)								#Read value
-		byte1 <- ComPortGetByte(dev)								#Read value
-		byte2 <- ComPortGetByte(dev)								#Read value
-		byte3 <- ComPortGetByte(dev)								#Read value
+		byte0 <- ComPortGetByte(dev)								                
+		byte1 <- ComPortGetByte(dev)								                    
+		byte2 <- ComPortGetByte(dev)								
+		byte3 <- ComPortGetByte(dev)								
 				
 		value <- byte3
 		value <- (value * 256) + byte2
 		value <- (value * 256) + byte1
 		value <- (value * 256) + byte0	
     }
-
-    return (value)
+    return([value,start])
 }
